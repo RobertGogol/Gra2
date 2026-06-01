@@ -10,6 +10,7 @@
         canvas { display: none; }
         #ui { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: #333; padding: 20px; border-radius: 10px; }
         input, select, button { margin: 10px; padding: 10px; font-size: 16px; }
+        button:disabled { background: #555; color: #aaa; }
     </style>
 </head>
 <body>
@@ -32,6 +33,7 @@
 <script>
     const ui = document.getElementById('ui');
     const canvas = document.getElementById('gameCanvas');
+    const startBtn = document.getElementById('startBtn');
     const ctx = canvas.getContext('2d');
     
     canvas.width = window.innerWidth;
@@ -42,13 +44,14 @@
     let players = {};
     let colliding = {};
     let textTimer = 0;
+    let gameStarted = false;
 
     const speed = 0.6;
     const friction = 0.92;
     const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
 
-    // Konfiguracja MQTT dla multiplayera
-    const client = mqtt.connect('wss://broker.hivemq.com:8000/mqtt');
+    // Bezpieczny port 8884 dla komunikacji WSS (WebSocket Secure)
+    const client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt');
     const topic = 'kaszanka_game_room_998877';
 
     client.on('connect', () => {
@@ -65,16 +68,23 @@
         } catch (e) {}
     });
 
-    document.getElementById('startBtn').addEventListener('click', () => {
+    startBtn.addEventListener('click', () => {
         const nameInput = document.getElementById('playerName').value;
-        if (!nameInput) return;
+        if (!nameInput || gameStarted) return;
+        
+        gameStarted = true;
+        startBtn.disabled = true;
+        
         me.name = nameInput;
         me.shape = document.getElementById('playerShape').value;
         ui.style.display = 'none';
         canvas.style.display = 'block';
         
-        // Inicjalizacja Audio Context po interakcji użytkownika
+        // Inicjalizacja i wymuszenie startu Audio Context
         window.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (window.audioCtx.state === 'suspended') {
+            window.audioCtx.resume();
+        }
         
         requestAnimationFrame(gameLoop);
         setInterval(broadcastState, 50);
@@ -86,23 +96,26 @@
 
     function playNoise() {
         if (!window.audioCtx) return;
-        const bufferSize = audioCtx.sampleRate * 0.1; 
-        const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+        if (window.audioCtx.state === 'suspended') window.audioCtx.resume();
+        
+        const bufferSize = window.audioCtx.sampleRate * 0.1; 
+        const buffer = window.audioCtx.createBuffer(1, bufferSize, window.audioCtx.sampleRate);
         const data = buffer.getChannelData(0);
         for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
         
-        const noise = audioCtx.createBufferSource();
+        const noise = window.audioCtx.createBufferSource();
         noise.buffer = buffer;
-        const gainNode = audioCtx.createGain();
-        gainNode.gain.setValueAtTime(0.5, audioCtx.currentTime);
-        gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        const gainNode = window.audioCtx.createGain();
+        gainNode.gain.setValueAtTime(0.5, window.audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, window.audioCtx.currentTime + 0.1);
         
         noise.connect(gainNode);
-        gainNode.connect(audioCtx.destination);
+        gainNode.connect(window.audioCtx.destination);
         noise.start();
     }
 
     function broadcastState() {
+        if (!gameStarted) return;
         client.publish(topic, JSON.stringify({
             id: myId,
             x: me.x,
@@ -131,56 +144,4 @@
             }
         } else if (shape === 'star') {
             for (let i = 0; i < 10; i++) {
-                const r = i % 2 === 0 ? size : size / 2;
-                ctx.lineTo(x + r * Math.cos(i * Math.PI / 5 - Math.PI / 2), y + r * Math.sin(i * Math.PI / 5 - Math.PI / 2));
-            }
-        }
-        ctx.closePath();
-        ctx.fill();
-    }
-
-    function gameLoop() {
-        // Fizyka
-        if (keys.ArrowUp) me.vy -= speed;
-        if (keys.ArrowDown) me.vy += speed;
-        if (keys.ArrowLeft) me.vx -= speed;
-        if (keys.ArrowRight) me.vx += speed;
-
-        me.vx *= friction;
-        me.vy *= friction;
-        me.x += me.vx;
-        me.y += me.vy;
-
-        // Granice ekranu
-        if (me.x < 20) { me.x = 20; me.vx *= -1; }
-        if (me.x > canvas.width - 20) { me.x = canvas.width - 20; me.vx *= -1; }
-        if (me.y < 20) { me.y = 20; me.vy *= -1; }
-        if (me.y > canvas.height - 20) { me.y = canvas.height - 20; me.vy *= -1; }
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Kolizje i rysowanie innych
-        const now = Date.now();
-        for (let id in players) {
-            let p = players[id];
-            if (now - p.lastSeen > 2000) {
-                delete players[id];
-                continue;
-            }
-
-            let dx = p.x - me.x;
-            let dy = p.y - me.y;
-            let dist = Math.sqrt(dx * dx + dy * dy);
-
-            if (dist < 40 && !colliding[id]) {
-                playNoise();
-                textTimer = 120; // klatki wyświetlania napisu
-                colliding[id] = true;
-            } else if (dist >= 40) {
-                colliding[id] = false;
-            }
-
-            drawShape(p.x, p.y, p.shape, '#ff5555');
-            ctx.fillStyle = 'white';
-            ctx.textAlign = 'center';
-            ctx.fillText(p.name, p.x, p.y + 35);
+                const r = i % 2 === 0 ? size : size /
